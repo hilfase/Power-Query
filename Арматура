@@ -1,31 +1,81 @@
 let
-    SourcePath       = "C:\Path\To\AnonymizedWorkbook.xlsx",
-    SourceTableName  = "SourceTable",
-    ActuatorKeyword  = "actuator",
-    ExcludedVendors  = {"VendorA", "VendorB", "VendorC", "VendorD"},
+    // ========================================================================
+    // ПАРАМЕТРЫ ЗАПРОСА
+    // ========================================================================
+    // Путь к книге Excel. В портфолио — плейсхолдер.
+    SourcePath        = "C:\Path\To\AnonymizedWorkbook.xlsx",
 
+    // Имя таблицы внутри книги Excel.
+    SourceTableName   = "SourceTable",
+
+    // Ключевое слово для классификации записи по текстовому полю Description.
+    // Нейтральная заглушка, не отражает предметную область.
+    KeywordForCategory = "keyword",
+
+    // Набор значений, которые нужно исключить из результата.
+    ExcludedVendors   = {"VendorA", "VendorB", "VendorC", "VendorD"},
+
+    // ========================================================================
+    // ШАГ 1. ЗАГРУЗКА ИСТОЧНИКА
+    // ========================================================================
+    // Открываем книгу Excel без вычисления формул и без скрытых листов.
     Источник = Excel.Workbook(File.Contents(SourcePath), null, true),
+
+    // Достаём таблицу по имени.
     SourceTable = Источник{[Item=SourceTableName, Kind="Table"]}[Data],
 
+    // ========================================================================
+    // ШАГ 2. ОЧИСТКА ОТ ОШИБОК
+    // ========================================================================
+    // Удаляем строки с ошибками в ключевых колонках Rate и PositionCode.
     #"Removed Errors" = Table.RemoveRowsWithErrors(SourceTable, {"Rate", "PositionCode"}),
 
+    // ========================================================================
+    // ШАГ 3. ВЫБОР НУЖНЫХ КОЛОНОК
+    // ========================================================================
+    // Оставляем идентификаторы записи, набор числовых полей стадий,
+    // связанные с ними поля дат, текстовые поля и поле ставки.
     #"Selected Columns" = Table.SelectColumns(
         #"Removed Errors",
         {
+            // --- Идентификаторы записи ---
             "ZoneTitle", "Line", "Sheet", "Revision", "PipeSpec", "Material",
             "PTNo", "ComponentType", "NS", "DiaInch2", "ItemCode",
             "SerialNo", "Description", "RateNumber", "PN",
+
+            // --- Стадия 1: числовое значение + связанные поля ---
             "Pct20_Structural", "Date_Structural", "Foreman_Structural", "Vendor_Structural",
+
+            // --- Стадия 2 ---
             "Pct15_TestDismantling", "Date_TestDismantling", "Foreman_TestDismantling", "Vendor_TestDismantling",
+
+            // --- Стадия 3 ---
             "Pct15_TestFlushing", "Date_TestFlushing", "Foreman_TestFlushing", "Vendor_TestFlushing",
+
+            // --- Стадия 4 ---
             "Pct10_ReverseAssemblyTest", "Date_ReverseAssemblyTest", "Foreman_ReverseAssemblyTest", "Vendor_ReverseAssemblyTest",
+
+            // --- Стадия 5 ---
             "Pct15_FMDismantling", "Date_FMDismantling", "Foreman_FMDismantling", "Vendor_FMDismantling",
+
+            // --- Стадия 6 ---
             "Pct15_FMCleaning", "Date_FMCleaning", "Foreman_FMCleaning", "Vendor_FMCleaning",
+
+            // --- Стадия 7 ---
             "Pct10_FMReassembly", "Date_FMReassembly", "Foreman_FMReassembly", "Vendor_FMReassembly",
+
+            // --- Ставка ---
             "Rate"
         }
     ),
 
+    // ========================================================================
+    // ШАГ 4. UNPIVOT: ШИРОКАЯ ТАБЛИЦА -> ДЛИННАЯ
+    // ========================================================================
+    // Числовые поля стадий превращаем в пары "Attribute"/"Value".
+    // В списке для UnpivotOtherColumns перечислены колонки, которые НЕ сворачиваем:
+    // идентификаторы записи + все связанные поля дат, текстовые поля и поле ставки.
+    // Остальные колонки (числовые поля стадий) станут строками.
     #"Unpivoted Other Columns" = Table.UnpivotOtherColumns(
         #"Selected Columns",
         {
@@ -41,12 +91,21 @@ let
             "Date_FMReassembly", "Foreman_FMReassembly", "Vendor_FMReassembly",
             "Rate"
         },
-        "Attribute",
-        "Value"
+        "Attribute",   // имя колонки для названия атрибута
+        "Value"        // имя колонки для значения атрибута
     ),
 
+    // ========================================================================
+    // ШАГ 5. ПЕРЕИМЕНОВАНИЕ ЗНАЧЕНИЯ
+    // ========================================================================
+    // "Value" содержательно означает значение атрибута — переименовываем.
     #"Renamed Columns" = Table.RenameColumns(#"Unpivoted Other Columns", {{"Value", "Volume"}}),
 
+    // ========================================================================
+    // ШАГ 6. ПОДТЯГИВАНИЕ ДАТЫ ПО АТРИБУТУ
+    // ========================================================================
+    // Для каждой строки выбираем соответствующее поле даты по значению Attribute.
+    // Если атрибут не совпал — null.
     #"Added Date" = Table.AddColumn(
         #"Renamed Columns",
         "Date",
@@ -60,13 +119,22 @@ let
         else null
     ),
 
+    // Приводим тип колонки Date к типу date.
     #"Changed Type" = Table.TransformColumnTypes(#"Added Date", {{"Date", type date}}),
 
+    // ========================================================================
+    // ШАГ 7. ФИЛЬТР ПО ПЕРИОДУ
+    // ========================================================================
+    // Оставляем только строки за текущий и предыдущий месяц.
     #"Filtered Dates" = Table.SelectRows(
         #"Changed Type",
         each Date.IsInCurrentMonth([Date]) or Date.IsInPreviousMonth([Date])
     ),
 
+    // ========================================================================
+    // ШАГ 8. ПОДТЯГИВАНИЕ ТЕКСТОВЫХ ПОЛЕЙ ПО АТРИБУТУ
+    // ========================================================================
+    // Выбираем поле поставщика (Vendor_*) по значению Attribute.
     #"Added Contractor" = Table.AddColumn(
         #"Filtered Dates",
         "Contractor",
@@ -80,6 +148,7 @@ let
         else null
     ),
 
+    // И текстовое поле ответственного (Foreman_*) по значению Attribute.
     #"Added Foreman" = Table.AddColumn(
         #"Added Contractor",
         "Foreman",
@@ -93,11 +162,19 @@ let
         else null
     ),
 
+    // ========================================================================
+    // ШАГ 9. ИСКЛЮЧЕНИЕ НЕЖЕЛАТЕЛЬНЫХ ЗНАЧЕНИЙ
+    // ========================================================================
+    // Убираем строки, где Contractor совпал со списком ExcludedVendors.
     #"Filtered Vendors" = Table.SelectRows(
         #"Added Foreman",
         each not List.Contains(ExcludedVendors, [Contractor])
     ),
 
+    // ========================================================================
+    // ШАГ 10. ФИНАЛЬНЫЙ НАБОР КОЛОНОК
+    // ========================================================================
+    // Оставляем только нужные для отчёта колонки — источник и вычисленные.
     #"Selected Final Columns" = Table.SelectColumns(
         #"Filtered Vendors",
         {
@@ -108,12 +185,18 @@ let
         }
     ),
 
-    #"Added ValveActuator" = Table.AddColumn(
+    // ========================================================================
+    // ШАГ 11. КЛАССИФИКАЦИЯ ПО КЛЮЧЕВОМУ СЛОВУ
+    // ========================================================================
+    // Если в Description встречается KeywordForCategory (без учёта регистра),
+    // ставим CategoryA, иначе CategoryB. Нейтральные заглушки.
+    #"Added ItemCategory" = Table.AddColumn(
         #"Selected Final Columns",
-        "ValveActuator",
-        each if Text.Contains([Description], ActuatorKeyword, Comparer.OrdinalIgnoreCase)
-        then "Actuator"
-        else "Valve"
+        "ItemCategory",
+        each if Text.Contains([Description], KeywordForCategory, Comparer.OrdinalIgnoreCase)
+        then "CategoryA"
+        else "CategoryB"
     )
 in
-    #"Added ValveActuator"
+    // Возвращаем финальный результат запроса.
+    #"Added ItemCategory"

@@ -1,0 +1,119 @@
+let
+    SourcePath       = "C:\Path\To\AnonymizedWorkbook.xlsx",
+    SourceTableName  = "SourceTable",
+    ActuatorKeyword  = "actuator",
+    ExcludedVendors  = {"VendorA", "VendorB", "VendorC", "VendorD"},
+
+    Источник = Excel.Workbook(File.Contents(SourcePath), null, true),
+    SourceTable = Источник{[Item=SourceTableName, Kind="Table"]}[Data],
+
+    #"Removed Errors" = Table.RemoveRowsWithErrors(SourceTable, {"Rate", "PositionCode"}),
+
+    #"Selected Columns" = Table.SelectColumns(
+        #"Removed Errors",
+        {
+            "ZoneTitle", "Line", "Sheet", "Revision", "PipeSpec", "Material",
+            "PTNo", "ComponentType", "NS", "DiaInch2", "ItemCode",
+            "SerialNo", "Description", "RateNumber", "PN",
+            "Pct20_Structural", "Date_Structural", "Foreman_Structural", "Vendor_Structural",
+            "Pct15_TestDismantling", "Date_TestDismantling", "Foreman_TestDismantling", "Vendor_TestDismantling",
+            "Pct15_TestFlushing", "Date_TestFlushing", "Foreman_TestFlushing", "Vendor_TestFlushing",
+            "Pct10_ReverseAssemblyTest", "Date_ReverseAssemblyTest", "Foreman_ReverseAssemblyTest", "Vendor_ReverseAssemblyTest",
+            "Pct15_FMDismantling", "Date_FMDismantling", "Foreman_FMDismantling", "Vendor_FMDismantling",
+            "Pct15_FMCleaning", "Date_FMCleaning", "Foreman_FMCleaning", "Vendor_FMCleaning",
+            "Pct10_FMReassembly", "Date_FMReassembly", "Foreman_FMReassembly", "Vendor_FMReassembly",
+            "Rate"
+        }
+    ),
+
+    #"Unpivoted Other Columns" = Table.UnpivotOtherColumns(
+        #"Selected Columns",
+        {
+            "ZoneTitle", "Line", "Sheet", "Revision", "PipeSpec", "Material",
+            "PTNo", "ComponentType", "NS", "DiaInch2", "ItemCode",
+            "SerialNo", "Description", "RateNumber", "PN",
+            "Date_Structural", "Foreman_Structural", "Vendor_Structural",
+            "Date_TestDismantling", "Foreman_TestDismantling", "Vendor_TestDismantling",
+            "Date_TestFlushing", "Foreman_TestFlushing", "Vendor_TestFlushing",
+            "Date_ReverseAssemblyTest", "Foreman_ReverseAssemblyTest", "Vendor_ReverseAssemblyTest",
+            "Date_FMDismantling", "Foreman_FMDismantling", "Vendor_FMDismantling",
+            "Date_FMCleaning", "Foreman_FMCleaning", "Vendor_FMCleaning",
+            "Date_FMReassembly", "Foreman_FMReassembly", "Vendor_FMReassembly",
+            "Rate"
+        },
+        "Attribute",
+        "Value"
+    ),
+
+    #"Renamed Columns" = Table.RenameColumns(#"Unpivoted Other Columns", {{"Value", "Volume"}}),
+
+    #"Added Date" = Table.AddColumn(
+        #"Renamed Columns",
+        "Date",
+        each if [Attribute] = "Pct20_Structural" then [Date_Structural]
+        else if [Attribute] = "Pct15_TestDismantling" then [Date_TestDismantling]
+        else if [Attribute] = "Pct15_TestFlushing" then [Date_TestFlushing]
+        else if [Attribute] = "Pct10_ReverseAssemblyTest" then [Date_ReverseAssemblyTest]
+        else if [Attribute] = "Pct15_FMDismantling" then [Date_FMDismantling]
+        else if [Attribute] = "Pct15_FMCleaning" then [Date_FMCleaning]
+        else if [Attribute] = "Pct10_FMReassembly" then [Date_FMReassembly]
+        else null
+    ),
+
+    #"Changed Type" = Table.TransformColumnTypes(#"Added Date", {{"Date", type date}}),
+
+    #"Filtered Dates" = Table.SelectRows(
+        #"Changed Type",
+        each Date.IsInCurrentMonth([Date]) or Date.IsInPreviousMonth([Date])
+    ),
+
+    #"Added Contractor" = Table.AddColumn(
+        #"Filtered Dates",
+        "Contractor",
+        each if [Attribute] = "Pct20_Structural" then [Vendor_Structural]
+        else if [Attribute] = "Pct15_TestDismantling" then [Vendor_TestDismantling]
+        else if [Attribute] = "Pct15_TestFlushing" then [Vendor_TestFlushing]
+        else if [Attribute] = "Pct10_ReverseAssemblyTest" then [Vendor_ReverseAssemblyTest]
+        else if [Attribute] = "Pct15_FMDismantling" then [Vendor_FMDismantling]
+        else if [Attribute] = "Pct15_FMCleaning" then [Vendor_FMCleaning]
+        else if [Attribute] = "Pct10_FMReassembly" then [Vendor_FMReassembly]
+        else null
+    ),
+
+    #"Added Foreman" = Table.AddColumn(
+        #"Added Contractor",
+        "Foreman",
+        each if [Attribute] = "Pct20_Structural" then [Foreman_Structural]
+        else if [Attribute] = "Pct15_TestDismantling" then [Foreman_TestDismantling]
+        else if [Attribute] = "Pct15_TestFlushing" then [Foreman_TestFlushing]
+        else if [Attribute] = "Pct10_ReverseAssemblyTest" then [Foreman_ReverseAssemblyTest]
+        else if [Attribute] = "Pct15_FMDismantling" then [Foreman_FMDismantling]
+        else if [Attribute] = "Pct15_FMCleaning" then [Foreman_FMCleaning]
+        else if [Attribute] = "Pct10_FMReassembly" then [Foreman_FMReassembly]
+        else null
+    ),
+
+    #"Filtered Vendors" = Table.SelectRows(
+        #"Added Foreman",
+        each not List.Contains(ExcludedVendors, [Contractor])
+    ),
+
+    #"Selected Final Columns" = Table.SelectColumns(
+        #"Filtered Vendors",
+        {
+            "ZoneTitle", "Line", "Sheet", "Revision", "PipeSpec", "Material",
+            "PTNo", "ComponentType", "NS", "DiaInch2", "ItemCode",
+            "SerialNo", "Description", "RateNumber", "PN",
+            "Rate", "Attribute", "Volume", "Date", "Contractor", "Foreman"
+        }
+    ),
+
+    #"Added ValveActuator" = Table.AddColumn(
+        #"Selected Final Columns",
+        "ValveActuator",
+        each if Text.Contains([Description], ActuatorKeyword, Comparer.OrdinalIgnoreCase)
+        then "Actuator"
+        else "Valve"
+    )
+in
+    #"Added ValveActuator"

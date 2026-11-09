@@ -1,0 +1,168 @@
+let
+    // ========================================================================
+    // ПАРАМЕТРЫ ЗАПРОСА
+    // ========================================================================
+    // Набор внешних запросов, которые объединяются в один источник.
+    // В портфолио заменены на нейтральные имена.
+    QueryA = QueryA,
+    QueryB = QueryB,
+    QueryC = QueryC,
+
+    // Справочный запрос для левого соединения.
+    RefTable = RefTable,
+
+    // Набор значений, которые нужно исключить из результата.
+    ExcludedContractors = {"VendorA", "VendorB", "VendorC"},
+
+    // ========================================================================
+    // ШАГ 1. ОБЪЕДИНЕНИЕ ИСТОЧНИКОВ
+    // ========================================================================
+    // Объединяем три входных запроса в одну таблицу.
+    // Предполагается, что входные запросы уже отдают нейтральные имена колонок:
+    // Weight100, Qty, ZoneTitle, Line, Spool, Sheet, PTNo, Contractor, Foreman, Date.
+    Источник = Table.Combine({QueryA, QueryB, QueryC}),
+
+    // ========================================================================
+    // ШАГ 2. ДОБАВЛЕНИЕ ПРОИЗВОДНОГО ЧИСЛОВОГО ПОЛЯ
+    // ========================================================================
+    // Вычисляем производное значение из Weight100.
+    #"Added DerivedValue" = Table.AddColumn(
+        Источник,
+        "DerivedValue",
+        each [#"Weight100"] / 1000
+    ),
+
+    // ========================================================================
+    // ШАГ 3. ДОБАВЛЕНИЕ КОДА ПО ДИАПАЗОНУ
+    // ========================================================================
+    // По значению Weight100 присваиваем нейтральный код из фиксированного набора.
+    // Если значение пустое или неположительное — "none".
+    #"Added Code" = Table.AddColumn(
+        #"Added DerivedValue",
+        "Code",
+        each let
+            x = [#"Weight100"]
+        in
+            if x = null or x <= 0 then "none"
+            else if x <= 10 then "CODE-01"
+            else if x <= 20 then "CODE-02"
+            else if x <= 50 then "CODE-03"
+            else if x <= 100 then "CODE-04"
+            else if x <= 300 then "CODE-05"
+            else if x <= 500 then "CODE-06"
+            else if x <= 1000 then "CODE-07"
+            else "CODE-08"
+    ),
+
+    // ========================================================================
+    // ШАГ 4. ДОБАВЛЕНИЕ ПУСТЫХ ТЕКСТОВЫХ ПОЛЕЙ
+    // ========================================================================
+    // Добавляем служебные текстовые поля с пустыми значениями.
+    #"Added ID" = Table.AddColumn(#"Added Code", "ID", each ""),
+    #"Added ItemName" = Table.AddColumn(#"Added ID", "ItemName", each ""),
+    #"Added Material" = Table.AddColumn(#"Added ItemName", "Material", each ""),
+
+    // Добавляем фиксированное значение типа работ.
+    #"Added WorkName" = Table.AddColumn(#"Added Material", "WorkName", each "WorkTypeA"),
+
+    // Добавляем единицу измерения.
+    #"Added Unit" = Table.AddColumn(#"Added WorkName", "Unit", each "kg"),
+
+    // ========================================================================
+    // ШАГ 5. ПРИВЕДЕНИЕ ТИПОВ
+    // ========================================================================
+    // Приводим числовые поля к типу number.
+    #"Changed Type" = Table.TransformColumnTypes(
+        #"Added Unit",
+        {{"Weight100", type number}, {"Qty", type number}}
+    ),
+
+    // ========================================================================
+    // ШАГ 6. РАСЧЁТ ПРОИЗВОДНОГО ОБЪЁМА
+    // ========================================================================
+    // Если Unit = "kg", то VolumeRate = Weight100 * Qty, иначе Weight100 / 1000.
+    #"Added VolumeRate" = Table.AddColumn(
+        #"Changed Type",
+        "VolumeRate",
+        each let
+            x = [Unit],
+            y = [#"Weight100"],
+            z = [Qty]
+        in
+            if x = "kg" then y * z
+            else y / 1000
+    ),
+
+    // ========================================================================
+    // ШАГ 7. ПЕРЕУПОРЯДОЧИВАНИЕ КОЛОНОК
+    // ========================================================================
+    // Приводим порядок колонок к целевому виду.
+    #"Reordered Columns" = Table.ReorderColumns(
+        #"Added VolumeRate",
+        {
+            "ZoneTitle", "Line", "Spool", "Sheet", "ID", "PTNo",
+            "ItemName", "Weight100", "Material", "ElevationMark",
+            "Code", "WorkName", "Unit", "Contractor", "Foreman",
+            "Date", "Qty", "VolumeRate"
+        }
+    ),
+
+    // ========================================================================
+    // ШАГ 8. ЛЕВОЕ СОЕДИНЕНИЕ СО СПРАВОЧНИКОМ
+    // ========================================================================
+    // Соединяем по Code со справочным запросом RefTable.
+    #"Joined Ref" = Table.NestedJoin(
+        #"Reordered Columns",
+        {"Code"},
+        RefTable,
+        {"code"},
+        "RefTable",
+        JoinKind.LeftOuter
+    ),
+
+    // Разворачиваем из справочника только поле NormBase.
+    #"Expanded Ref" = Table.ExpandTableColumn(
+        #"Joined Ref",
+        "RefTable",
+        {"NormBase"},
+        {"NormBase"}
+    ),
+
+    // ========================================================================
+    // ШАГ 9. РАСЧЁТ ИТОГОВОГО ЗНАЧЕНИЯ
+    // ========================================================================
+    // Итоговое значение = VolumeRate * NormBase.
+    #"Added TotalBase" = Table.AddColumn(
+        #"Expanded Ref",
+        "TotalBase",
+        each [VolumeRate] * [NormBase]
+    ),
+
+    // Приводим типы вычисленных и связанных полей.
+    #"Changed Type1" = Table.TransformColumnTypes(
+        #"Added TotalBase",
+        {
+            {"NormBase", type number},
+            {"TotalBase", type number},
+            {"VolumeRate", type number},
+            {"ElevationMark", type number},
+            {"Date", type date}
+        }
+    ),
+
+    // ========================================================================
+    // ШАГ 10. ФИЛЬТРАЦИЯ
+    // ========================================================================
+    // Исключаем строки, где Contractor входит в ExcludedContractors.
+    #"Filtered Contractors" = Table.SelectRows(
+        #"Changed Type1",
+        each not List.Contains(ExcludedContractors, [Contractor])
+    ),
+
+    // Оставляем только текущий и предыдущий месяц по Date.
+    #"Filtered Dates" = Table.SelectRows(
+        #"Filtered Contractors",
+        each Date.IsInCurrentMonth([Date]) or Date.IsInPreviousMonth([Date])
+    )
+in
+    #"Filtered Dates"
